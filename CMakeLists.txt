@@ -31,7 +31,7 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++20 /Zc:__cplusplus")
 endif()
 
-target_include_directories(minifetch PUBLIC src)
+target_include_directories(minifetch PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 
 if(NOT WIN32 AND NOT EMSCRIPTEN)

@@ -1,6 +1,7 @@
 ﻿// minifetch.cpp : lightweight web fetch library
 #include "minifetch.h"
 #include <sstream>
+#include <fstream>
 #include <iomanip>
 
 #if defined(_WIN32)
@@ -12,6 +13,26 @@
 #else
     #include <curl/curl.h>
 #endif
+
+bool MiniFetch::Request::fillServerFromUrl(std::string url) {
+    size_t protEnd = url.find("://");
+    if (protEnd == std::string::npos) return false;
+    protocol = url.substr(0, protEnd);
+
+    size_t serverStart = protEnd + 3;
+
+    size_t pathStart = url.find('/', serverStart);
+    if (pathStart == std::string::npos) {
+        // No path specified, entire rest is server
+        server = url.substr(serverStart);
+        path = "/";
+    } else {
+        server = url.substr(serverStart, pathStart - serverStart);
+        path = url.substr(pathStart);
+    }
+
+    return true;
+}
 
 MiniFetch::Response MiniFetch::fetch() {
     MiniFetch::Response response = {};
@@ -33,9 +54,9 @@ MiniFetch::Response MiniFetch::fetch() {
 
     std::wstring wServer = from_bytes(request.server);
     INTERNET_PORT port = request.protocol == "https" ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
-    if (!request.port.empty()) port = std::stoi(request.port);
+    if (!request.port.empty()) { port = std::stoi(request.port); }
 
-    std::string url = buildUrl();
+    std::string url = buildUrl(false);
     std::wstring wPath = from_bytes(url);
 
     HINTERNET hSession = WinHttpOpen(L"WinHTTP Client/1.0",
@@ -61,12 +82,12 @@ MiniFetch::Response MiniFetch::fetch() {
     }
 
     // Set headers
+    std::string postData = buildQueryPost();  // post data before headers -> will add headers
     for (auto& [k, v] : request.headers) {
         std::wstring headerLine = from_bytes(k + ": " + v + "\r\n");
         WinHttpAddRequestHeaders(hRequest, headerLine.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
     }
 
-    std::string postData = buildQuery(request.postVariables);
     BOOL bResults = WinHttpSendRequest(hRequest,
                                        WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                        request.method == "POST" ? (LPVOID)postData.c_str() : WINHTTP_NO_REQUEST_DATA,
@@ -109,9 +130,10 @@ MiniFetch::Response MiniFetch::fetch() {
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    response.status = StatusCode(statusCode);
+    response.status = Status::Code(statusCode);
     return response;
 #elif defined(__EMSCRIPTEN__)
+    // In order to use the Fetch API, you would need to compile your code with -sFETCH
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, request.method.c_str());
@@ -120,14 +142,14 @@ MiniFetch::Response MiniFetch::fetch() {
                       EMSCRIPTEN_FETCH_SYNCHRONOUS;  // Synchronous!
     std::string fullUrl = buildUrl();
     emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl);
-
+    // TODO postData
     if (fetch->status == 200) {
         response.bytes.assign(fetch->data, fetch->data + fetch->numBytes);
     }
 
     int status = fetch->status;
     emscripten_fetch_close(fetch);
-    response.status = StatusCode(status);
+    response.status = Status::Code(status);
     return response;
 
 #else
@@ -139,14 +161,13 @@ MiniFetch::Response MiniFetch::fetch() {
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request.method.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.timeoutSeconds);
 
+    std::string postData = buildQueryPost();  // post data before headers -> will add headers
     struct curl_slist* headers = nullptr;
     for (auto& [k, v] : request.headers) {
         std::string line = k + ": " + v;
         headers = curl_slist_append(headers, line.c_str());
     }
     if (headers) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    std::string postData = buildQuery(request.postVariables);
 
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
             auto* out = static_cast<std::vector<uint8_t>*>(userdata);
@@ -163,7 +184,7 @@ MiniFetch::Response MiniFetch::fetch() {
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    response.status = StatusCode(status);
+    response.status = Status::Code(status);
     return response;
 #endif
 }
@@ -183,22 +204,94 @@ std::string MiniFetch::urlEncode(const std::string& value) {
     return escaped.str();
 }
 
-std::string MiniFetch::buildQuery(const std::map<std::string, std::string>& vars) {
+void MiniFetch::prepareHeaders() {
+    auto fill = [&](std::string name, std::string def) {
+        if (request.headers.find(name) == request.headers.end()) {
+            request.headers[name] = def;
+        }
+    };
+    if (!request.postFileNames.empty()) {
+        request.headers["Content-Type"] = "multipart/form-data; boundary=" + request.boundary;
+    }
+    fill("User-Agent", "MiniFetch");
+    fill("Host", request.server);
+    fill("Accept", "*/*");
+}
+
+std::string MiniFetch::buildQueryPost() {
     std::string query;
-    for (auto it = vars.begin(); it != vars.end(); ++it) {
-        if (it != vars.begin()) query += "&";
+    if (request.postFileNames.empty()) {
+        for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
+            if (it != request.postVariables.begin()) query += "&";
+            query += urlEncode(it->first) + "=" + urlEncode(it->second);
+        }
+    } else {
+        // multipart/form-data
+
+        request.headers["Content-Type"] = "multipart/form-data; boundary=" + request.boundary;
+
+        for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
+            std::string filename = it->second;
+            size_t fnat = 0;
+            for (size_t i = 0; i < filename.size(); ++i) {
+                if (filename[i] == '/' || filename[i] == '\\') { fnat = i + 1; }
+            }
+            filename = filename.substr(fnat);
+            query += "--" + request.boundary + "\r\n" +
+                     "Content-Disposition: form-data; name=\"" + urlEncode(it->first) + "\"\r\n" +
+                     "\r\n" +
+                     urlEncode(it->second) + "\r\n";
+            ;
+        }
+        for (auto it = request.postFileNames.begin(); it != request.postFileNames.end(); ++it) {
+            std::string filename = it->second;
+            size_t fnat = 0;
+            for (size_t i = 0; i < filename.size(); ++i) {
+                if (filename[i] == '/' || filename[i] == '\\') { fnat = i + 1; }
+            }
+            filename = filename.substr(fnat);
+            std::string contentType = "application/octet-stream";
+            query += "--" + request.boundary + "\r\n" +
+                     "Content-Disposition: form-data; name=\"" + urlEncode(it->first) + "\"; filename=\"" + filename + "\"\r\n" +
+                     "Content-Type: " + contentType + "\r\n" +
+                     "\r\n" +
+                     fileContents(it->second) + "\r\n";
+            ;
+        }
+
+        query += "--" + request.boundary + "--\r\n";
+    }
+    return query;
+}
+std::string MiniFetch::buildQueryGet() {
+    std::string query;
+    for (auto it = request.getVariables.begin(); it != request.getVariables.end(); ++it) {
+        if (it != request.getVariables.begin()) query += "&";
         query += urlEncode(it->first) + "=" + urlEncode(it->second);
     }
     return query;
 }
 
-std::string MiniFetch::buildUrl() {
-    std::string url = request.protocol + "://" + request.server;
-    if (!request.path.empty() && request.path[0] != '/') {
-        url += "/";
+std::string MiniFetch::fileContents(std::string path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return "";
+    }
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
+}
+
+std::string MiniFetch::buildUrl(bool withServer) {
+    std::string url;
+    if (withServer) {
+        url = request.protocol + "://" + request.server;
+        if (!request.path.empty() && request.path[0] != '/') {
+            url += "/";
+        }
     }
     url += request.path;
-    std::string query = buildQuery(request.getVariables);
+    std::string query = buildQueryGet();
     if (!query.empty()) {
         url += "?" + query;
     }
@@ -206,8 +299,8 @@ std::string MiniFetch::buildUrl() {
 }
 
 std::string MiniFetch::Response::statusString() const {
-#define MCASE(a) \
-    case a:      \
+#define MCASE(a)    \
+    case Status::a: \
         return std::string(#a);
     switch (status) {
         MCASE(InternalError)                //  -1

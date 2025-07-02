@@ -8,3 +8,15 @@ and dependencies.
 - Uses asyncronous emscripten_fetch for EMSCRIPTEN
 - can use http and https
 - GET and POST data
+
+## Add and build with CMake
+To clone as a submodule just type:
+```
+git submodule add -- https://github.com/KungPhoo/minifetch.git minifetch
+```
+
+In your CMakeLists.txt just add:
+```
+add_subdirectory(minifetch) # where you cloned this submodule
+target_link_libraries(${APP_NAME} PRIVATE minifetch)
+```
