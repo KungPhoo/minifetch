@@ -15,11 +15,14 @@
 #endif
 
 bool MiniFetch::Request::fillServerFromUrl(std::string url) {
+    size_t serverStart = 0;
     size_t protEnd = url.find("://");
-    if (protEnd == std::string::npos) return false;
-    protocol = url.substr(0, protEnd);
-
-    size_t serverStart = protEnd + 3;
+    if (protEnd == std::string::npos) {
+        protocol = "";
+    } else {
+        protocol = url.substr(0, protEnd);
+        serverStart = protEnd + 3;
+    }
 
     size_t pathStart = url.find('/', serverStart);
     if (pathStart == std::string::npos) {
@@ -36,6 +39,18 @@ bool MiniFetch::Request::fillServerFromUrl(std::string url) {
 
 MiniFetch::Response MiniFetch::fetch() {
     MiniFetch::Response response = {};
+
+    // try https, then http if omitted.
+    if (request.protocol.empty()) {
+        request.protocol = "https";
+        response = fetch();
+        if (response.status >= Status::InternalServer) {
+            request.protocol = "http";
+            response = fetch();
+        }
+        return response;
+    }
+
 #if defined(_WIN32)
 
     // --
@@ -99,7 +114,9 @@ MiniFetch::Response MiniFetch::fetch() {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return {};
+
+        response.status = Status::ServiceUnavailable;
+        return response;
     }
 
     bResults = WinHttpReceiveResponse(hRequest, NULL);
@@ -107,7 +124,9 @@ MiniFetch::Response MiniFetch::fetch() {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return {};
+
+        response.status = Status::NoContent;
+        return response;
     }
 
     DWORD dwSize = 0;
@@ -361,7 +380,7 @@ std::string MiniFetch::Response::statusString() const {
         MCASE(GatewayTimeout)               //  504
         MCASE(HTTPVersionNotSupported)      //  505
         MCASE(InsufficientStorage)          //  507
-        MCASE(Internal)                     //  500
+        MCASE(InternalServer)               //  500
         MCASE(LoopDetected)                 //  508
         MCASE(NetworkAuthRequired)          //  511
         MCASE(NotExtended)                  //  510

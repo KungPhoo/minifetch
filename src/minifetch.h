@@ -60,7 +60,7 @@ class MiniFetch {
             LoginTimeOut = 440,
             RetryWith = 449,
             UnavailableForLegalReasons = 451,
-            Internal = 500,
+            InternalServer = 500,
             NotImplemented = 501,
             BadGateway = 502,
             ServiceUnavailable = 503,
