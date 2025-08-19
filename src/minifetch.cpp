@@ -3,12 +3,14 @@
 #include <sstream>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 
 #if defined(_WIN32)
     #include <windows.h>
     #include <winhttp.h>
     #pragma comment(lib, "winhttp.lib")
 #elif defined(__EMSCRIPTEN__)
+    #include <emscripten.h>
     #include <emscripten/fetch.h>
 #else
     #include <curl/curl.h>
@@ -152,18 +154,66 @@ MiniFetch::Response MiniFetch::fetch() {
     response.status = Status::Code(statusCode);
     return response;
 #elif defined(__EMSCRIPTEN__)
+
+    #define dbgprt void
+    // #define dbgprt printf
+
     // In order to use the Fetch API, you would need to compile your code with -sFETCH
+    response.status = Status::InternalError;
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, request.method.c_str());
 
-    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY |
-                      EMSCRIPTEN_FETCH_SYNCHRONOUS;  // Synchronous!
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+    static std::atomic<bool> finished = false;
+    finished = false;
+    attr.onsuccess = [](emscripten_fetch_t* fetch) {
+        finished = true;
+    };
+    attr.onerror = [](emscripten_fetch_t* fetch) {
+        finished = true;
+    };
+
     std::string fullUrl = buildUrl();
-    emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl);
-    // TODO postData
-    if (fetch->status == 200) {
-        response.bytes.assign(fetch->data, fetch->data + fetch->numBytes);
+    std::string postData = buildQueryPost();  // post data before headers -> will add headers
+    static std::vector<const char*> header_array;
+    header_array.clear();
+    if (!request.headers.empty()) {
+        // Array of const char* in key, value, key, value, ..., 0 format
+        header_array.reserve((request.headers.size() + 1) * 2);
+
+        for (auto& kv : request.headers) {
+            header_array.push_back(kv.first.c_str());
+            header_array.push_back(kv.second.c_str());
+        }
+
+        // Null-terminate the list
+        header_array.push_back(nullptr);
+        header_array.push_back(nullptr);
+
+        attr.requestHeaders = &header_array[0];
+    }
+
+    if (!postData.empty()) {
+        attr.requestData = postData.c_str();
+        attr.requestDataSize = postData.size();
+    }
+    attr.timeoutMSecs = 15000;
+
+    emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl.c_str());
+
+    // HACK https://stackoverflow.com/questions/44671703/how-to-setup-custom-header-fields-for-emscripten-fetch-api-from-c
+    // fetch->__attributes.requestHeaders = fetch->__attributes.requestHeaders;
+
+    while (!finished) {
+        std::cout << ".";
+        emscripten_sleep(10);
+    }
+
+    if (fetch->status == 200 && fetch->data != nullptr && fetch->numBytes > 0) {
+        response.bytes.resize(fetch->numBytes);
+        memcpy(&response.bytes[0], fetch->data, fetch->numBytes);
+        // response.bytes.assign(fetch->data, fetch->data + fetch->numBytes);
     }
 
     int status = fetch->status;
@@ -282,6 +332,7 @@ std::string MiniFetch::buildQueryPost() {
     }
     return query;
 }
+
 std::string MiniFetch::buildQueryGet() {
     std::string query;
     for (auto it = request.getVariables.begin(); it != request.getVariables.end(); ++it) {

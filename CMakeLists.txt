@@ -46,3 +46,15 @@ endif()
 add_executable (minifetchtest src/main.cpp)
 target_link_libraries(minifetchtest PRIVATE minifetch)
 
+# Emscripten specific
+if (EMSCRIPTEN)
+    set_target_properties(minifetchtest PROPERTIES
+    LINK_FLAGS "\
+    -sWASM=1 \
+    -sFETCH \
+    -sASYNCIFY \
+    -O2 \
+    "
+    )
+endif()
+
