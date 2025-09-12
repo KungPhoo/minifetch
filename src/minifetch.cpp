@@ -372,6 +372,7 @@ std::string MiniFetch::Response::statusString() const {
 #define MCASE(a)    \
     case Status::a: \
         return std::string(#a);
+
     switch (status) {
         MCASE(InternalError)                //  -1
         MCASE(Continue)                     //  100
