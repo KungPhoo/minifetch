@@ -2,7 +2,6 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <cstdint>
 
 class MiniFetch {
     public:
@@ -61,7 +60,7 @@ class MiniFetch {
             LoginTimeOut = 440,
             RetryWith = 449,
             UnavailableForLegalReasons = 451,
-            InternalServer = 500,
+            Internal = 500,
             NotImplemented = 501,
             BadGateway = 502,
             ServiceUnavailable = 503,
@@ -86,6 +85,8 @@ class MiniFetch {
         std::map<std::string, std::string> getVariables;
         std::map<std::string, std::string> postVariables;
         std::map<std::string, std::string> postFileNames;  // [varname] = filepath. upload content of these files
+        std::string rawPostData; // optional, additional data (JSON...), that's appended
+        
         std::string port = "";                             // optional
         int timeoutSeconds = 30;
         std::string boundary = "xxxMiniFetchFormBoundary7Mx4YZxkTrZu0gxxx";

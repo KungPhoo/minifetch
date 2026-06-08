@@ -1,30 +1,26 @@
 ﻿// minifetch.cpp : lightweight web fetch library
+#include "stdafx.h"
 #include "minifetch.h"
 #include <sstream>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
 
 #if defined(_WIN32)
     #include <windows.h>
     #include <winhttp.h>
     #pragma comment(lib, "winhttp.lib")
 #elif defined(__EMSCRIPTEN__)
-    #include <emscripten.h>
     #include <emscripten/fetch.h>
 #else
     #include <curl/curl.h>
 #endif
 
 bool MiniFetch::Request::fillServerFromUrl(std::string url) {
-    size_t serverStart = 0;
     size_t protEnd = url.find("://");
-    if (protEnd == std::string::npos) {
-        protocol = "";
-    } else {
-        protocol = url.substr(0, protEnd);
-        serverStart = protEnd + 3;
-    }
+    if (protEnd == std::string::npos) return false;
+    protocol = url.substr(0, protEnd);
+
+    size_t serverStart = protEnd + 3;
 
     size_t pathStart = url.find('/', serverStart);
     if (pathStart == std::string::npos) {
@@ -41,18 +37,6 @@ bool MiniFetch::Request::fillServerFromUrl(std::string url) {
 
 MiniFetch::Response MiniFetch::fetch() {
     MiniFetch::Response response = {};
-
-    // try https, then http if omitted.
-    if (request.protocol.empty()) {
-        request.protocol = "https";
-        response = fetch();
-        if (response.status >= Status::InternalServer) {
-            request.protocol = "http";
-            response = fetch();
-        }
-        return response;
-    }
-
 #if defined(_WIN32)
 
     // --
@@ -99,11 +83,13 @@ MiniFetch::Response MiniFetch::fetch() {
     }
 
     // Set headers
-    std::string postData = buildQueryPost();  // post data before headers -> will add headers
+    std::string postData = buildQueryPost();  // build post data before headers -> will add headers
     for (auto& [k, v] : request.headers) {
         std::wstring headerLine = from_bytes(k + ": " + v + "\r\n");
         WinHttpAddRequestHeaders(hRequest, headerLine.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
     }
+
+    postData += request.rawPostData;
 
     BOOL bResults = WinHttpSendRequest(hRequest,
                                        WINHTTP_NO_ADDITIONAL_HEADERS, 0,
@@ -116,9 +102,7 @@ MiniFetch::Response MiniFetch::fetch() {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-
-        response.status = Status::ServiceUnavailable;
-        return response;
+        return {};
     }
 
     bResults = WinHttpReceiveResponse(hRequest, NULL);
@@ -126,9 +110,7 @@ MiniFetch::Response MiniFetch::fetch() {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-
-        response.status = Status::NoContent;
-        return response;
+        return {};
     }
 
     DWORD dwSize = 0;
@@ -154,66 +136,18 @@ MiniFetch::Response MiniFetch::fetch() {
     response.status = Status::Code(statusCode);
     return response;
 #elif defined(__EMSCRIPTEN__)
-
-    #define dbgprt void
-    // #define dbgprt printf
-
     // In order to use the Fetch API, you would need to compile your code with -sFETCH
-    response.status = Status::InternalError;
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, request.method.c_str());
 
-    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
-    static std::atomic<bool> finished = false;
-    finished = false;
-    attr.onsuccess = [](emscripten_fetch_t* fetch) {
-        finished = true;
-    };
-    attr.onerror = [](emscripten_fetch_t* fetch) {
-        finished = true;
-    };
-
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY |
+                      EMSCRIPTEN_FETCH_SYNCHRONOUS;  // Synchronous!
     std::string fullUrl = buildUrl();
-    std::string postData = buildQueryPost();  // post data before headers -> will add headers
-    static std::vector<const char*> header_array;
-    header_array.clear();
-    if (!request.headers.empty()) {
-        // Array of const char* in key, value, key, value, ..., 0 format
-        header_array.reserve((request.headers.size() + 1) * 2);
-
-        for (auto& kv : request.headers) {
-            header_array.push_back(kv.first.c_str());
-            header_array.push_back(kv.second.c_str());
-        }
-
-        // Null-terminate the list
-        header_array.push_back(nullptr);
-        header_array.push_back(nullptr);
-
-        attr.requestHeaders = &header_array[0];
-    }
-
-    if (!postData.empty()) {
-        attr.requestData = postData.c_str();
-        attr.requestDataSize = postData.size();
-    }
-    attr.timeoutMSecs = 15000;
-
-    emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl.c_str());
-
-    // HACK https://stackoverflow.com/questions/44671703/how-to-setup-custom-header-fields-for-emscripten-fetch-api-from-c
-    // fetch->__attributes.requestHeaders = fetch->__attributes.requestHeaders;
-
-    while (!finished) {
-        std::cout << ".";
-        emscripten_sleep(10);
-    }
-
-    if (fetch->status == 200 && fetch->data != nullptr && fetch->numBytes > 0) {
-        response.bytes.resize(fetch->numBytes);
-        memcpy(&response.bytes[0], fetch->data, fetch->numBytes);
-        // response.bytes.assign(fetch->data, fetch->data + fetch->numBytes);
+    emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl);
+    // TODO postData
+    if (fetch->status == 200) {
+        response.bytes.assign(fetch->data, fetch->data + fetch->numBytes);
     }
 
     int status = fetch->status;
@@ -290,10 +224,12 @@ void MiniFetch::prepareHeaders() {
 std::string MiniFetch::buildQueryPost() {
     std::string query;
     if (request.postFileNames.empty()) {
-        for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
-            if (it != request.postVariables.begin()) query += "&";
-            query += urlEncode(it->first) + "=" + urlEncode(it->second);
-        }
+            for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
+                if (it != request.postVariables.begin()) {
+                    query += "&";
+                }
+                query += urlEncode(it->first) + "=" + urlEncode(it->second);
+            }
     } else {
         // multipart/form-data
 
@@ -332,7 +268,6 @@ std::string MiniFetch::buildQueryPost() {
     }
     return query;
 }
-
 std::string MiniFetch::buildQueryGet() {
     std::string query;
     for (auto it = request.getVariables.begin(); it != request.getVariables.end(); ++it) {
@@ -372,7 +307,6 @@ std::string MiniFetch::Response::statusString() const {
 #define MCASE(a)    \
     case Status::a: \
         return std::string(#a);
-
     switch (status) {
         MCASE(InternalError)                //  -1
         MCASE(Continue)                     //  100
@@ -432,7 +366,7 @@ std::string MiniFetch::Response::statusString() const {
         MCASE(GatewayTimeout)               //  504
         MCASE(HTTPVersionNotSupported)      //  505
         MCASE(InsufficientStorage)          //  507
-        MCASE(InternalServer)               //  500
+        MCASE(Internal)                     //  500
         MCASE(LoopDetected)                 //  508
         MCASE(NetworkAuthRequired)          //  511
         MCASE(NotExtended)                  //  510
