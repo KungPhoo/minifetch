@@ -2,11 +2,18 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <chrono>
+#include <optional>
+#include <utility>
 
 class MiniFetch {
 public:
     struct Status {
-        enum Code {
+        enum Code : int {
             InternalError               = -1,
             Continue                    = 100,
             SwitchingProtocols          = 101,
@@ -20,7 +27,7 @@ public:
             PartialContent              = 206,
             MultiStatus                 = 207,
             AlreadyReported             = 208,
-            IMUsed                      = 229,
+            IMUsed                      = 226,
             MultipleChoices             = 300,
             MovedPermanently            = 301,
             Found                       = 302,
@@ -90,20 +97,23 @@ public:
         std::string rawPostData; // optional, additional data (JSON...), that's appended
 
         std::string port     = ""; // optional
-        int timeoutSeconds   = 30;
+        int timeoutSeconds   = 30; // 0 means no timeout.
+        bool withCredentials = true; // Browser-managed cookies (Emscripten only).
         std::string boundary = "xxxMiniFetchFormBoundary7Mx4YZxkTrZu0gxxx";
 
         void clear() {
             *this = { };
         }
         bool fillServerFromUrl(std::string url = "https://www.example.com/dir/"); // clears all other variables
-    } request = { };
+    } request = { }; // Legacy API: externally synchronize edits and fetch().
 
     // response information and parser
     struct Response {
         Status::Code status = Status::InternalError;
         std::vector<uint8_t> bytes;
         std::map<std::string, std::string> setCookies;
+        std::vector<std::string> setCookieHeaders; // Preserves attributes and repeated cookie names.
+        std::string error; // Transport/setup failure; HTTP errors still have a status/body.
         std::string location; // in case of 302 ("Found" redirect)
         std::string toString() const {
             std::string result(bytes.begin(), bytes.end());
@@ -114,13 +124,39 @@ public:
 
     // the actual fetch method
     MiniFetch::Response fetch();
+    // Concurrent calls are safe when each caller owns its Request. No network-wide lock.
+    MiniFetch::Response fetch(Request request);
+#ifdef __EMSCRIPTEN__
+    // Browser-main-thread friendly. Setup errors call back inline, network completion
+    // on the event loop. Callbacks must not throw; destroying the client is safe.
+    void fetchAsync(Request request, std::function<void(Response)> callback);
+#endif
+    MiniFetch() = default;
+    MiniFetch(const MiniFetch&) = delete;
+    MiniFetch& operator=(const MiniFetch&) = delete;
 
     static std::string urlEncode(const std::string& value);
 
     // just for debugging
-    const std::map<std::string, std::map<std::string, std::string>> cookieJar() { return perSiteCookies; }
+    std::map<std::string, std::map<std::string, std::string>> cookieJar() const;
+    void clearCookies();
 
 private:
+    struct CookieState {
+        std::mutex mutex;
+        struct Cookie {
+            std::string value;
+            bool secure = false;
+            std::optional<std::chrono::system_clock::time_point> expires;
+        };
+        // Exact origin -> (path, name) -> cookie. Deliberately never share across origins.
+        std::map<std::string, std::map<std::pair<std::string, std::string>, Cookie>> values;
+    };
+    std::shared_ptr<CookieState> cookies_ = std::make_shared<CookieState>();
+    explicit MiniFetch(std::shared_ptr<CookieState> state) : cookies_(std::move(state)) {}
+    Response fetchImpl();
+    bool prepare(Response& response, std::string& body);
+    static std::string cookieOrigin(const Request& request);
     std::string buildQueryPost();
     std::string buildQueryGet();
     std::map<std::string, std::string> getRequestCookies() const;
@@ -129,6 +165,4 @@ private:
     std::string buildUrl(bool withServer = true);
 
     void storeReceivedCookies(const Request& rq, const Response& rs);
-
-    std::map<std::string, std::map<std::string, std::string>> perSiteCookies;
 };
