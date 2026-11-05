@@ -1,5 +1,6 @@
 #if MINIFETCH_BUILD_TEST
 #include <iostream>
+#include <utility>
 #include "minifetch.h"
 
 int main() {
@@ -11,14 +12,10 @@ int main() {
         if (!response.error.empty()) std::cerr << response.error << '\n';
         else std::cout << "Response: " << response.statusString() << '\n' << response.toString() << '\n';
     };
-#ifdef __EMSCRIPTEN__
-    client.fetchAsync(std::move(request), print);
-#else
     auto response = client.fetch(std::move(request));
     const bool failed = !response.error.empty();
     print(std::move(response));
     if (failed) return 1;
-#endif
     return 0;
 }
 #endif

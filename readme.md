@@ -44,19 +44,14 @@ plus `fetch()` API requires external synchronization if you mutate it across
 threads. Fetch no longer modifies the supplied request, and clients are
 noncopyable. C++20 applications can use the same API.
 
-For Emscripten on the browser main thread, use a callback:
-
-```cpp
-client.fetchAsync(request, [](MiniFetch::Response response) {
-    // Handle response.error or response.status/body. Do not throw here.
-});
-```
-
-The async request owns its data even if the original Request or client goes out
-of scope. Setup errors invoke the callback inline; network results arrive on the
-event loop. Browsers control cookies, CORS, and redirects. Native manual redirects
-and explicit cookies cannot be reproduced exactly in the browser. See
-[the review and API notes](docs/review.md) for details and remaining limitations.
+Emscripten uses the same `client.fetch(request)` or `client.fetch()` API.
+Internally it starts an asynchronous Fetch and yields with Asyncify until the
+callback completes. The CMake target propagates `-sFETCH=1 -sASYNCIFY=1`; use both
+flags when linking without CMake. Call from an Asyncify-capable application entry
+point. Do not start another suspended fetch on the same browser thread while one
+is pending; Asyncify cannot suspend overlapping call stacks. Browser-controlled
+cookies, CORS, and redirects still differ from native platforms. See
+[the review and API notes](docs/review.md) for details.
 
 ## Standalone build and regression checks
 
@@ -82,5 +77,5 @@ emcmake cmake -S . -B out/wasm
 cmake --build out/wasm --parallel 2
 ```
 
-The target propagates Fetch support and C++ exception handling. Async Fetch works
-on the browser main thread; synchronous Fetch requires an appropriate worker.
+The target propagates Fetch, Asyncify, and C++ exception handling. The public
+fetch API is the same on native and browser builds.

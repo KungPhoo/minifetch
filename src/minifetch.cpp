@@ -12,6 +12,9 @@
 #include <utility>
 #include <ctime>
 #include <locale>
+#include <mutex>
+#include <chrono>
+#include <optional>
 
 #if defined(_WIN32)
     #include <windows.h>
@@ -21,10 +24,24 @@
     #endif
 #elif defined(__EMSCRIPTEN__)
     #include <emscripten/fetch.h>
-    #include <emscripten/threading.h>
+    #include <emscripten/emscripten.h>
 #else
     #include <curl/curl.h>
 #endif
+
+struct MiniFetch::CookieState {
+        std::mutex mutex;
+        struct Cookie {
+            std::string value;
+            bool secure = false;
+            std::optional<std::chrono::system_clock::time_point> expires;
+        };
+        // Exact origin -> (path, name) -> cookie. Deliberately never share across origins.
+        std::map<std::string, std::map<std::pair<std::string, std::string>, Cookie>> values;
+    };
+
+MiniFetch::MiniFetch() : cookies_(std::make_shared<CookieState>()) {}
+MiniFetch::MiniFetch(std::shared_ptr<CookieState> state) : cookies_(std::move(state)) {}
 
 static std::string trim(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
@@ -96,7 +113,8 @@ struct BrowserRequest {
     std::string url, body;
     std::vector<std::string> headerStrings;
     std::vector<const char*> headers;
-    std::function<void(MiniFetch::Response)> callback;
+    MiniFetch::Response response;
+    bool completed = false;
 };
 
 MiniFetch::Response browserResponse(emscripten_fetch_t* fetch) {
@@ -121,16 +139,14 @@ MiniFetch::Response browserResponse(emscripten_fetch_t* fetch) {
 }
 
 void browserDone(emscripten_fetch_t* fetch) {
-    std::unique_ptr<BrowserRequest> state(static_cast<BrowserRequest*>(fetch->userData));
-    MiniFetch::Response response;
-    try { response = browserResponse(fetch); }
+    auto* state = static_cast<BrowserRequest*>(fetch->userData);
+    try { state->response = browserResponse(fetch); }
     catch (...) {
         emscripten_fetch_close(fetch);
         std::terminate(); // Never unwind through the C/JS callback boundary.
     }
     emscripten_fetch_close(fetch);
-    try { state->callback(std::move(response)); }
-    catch (...) { std::terminate(); } // Callbacks must not throw.
+    state->completed = true;
 }
 
 std::unique_ptr<BrowserRequest> browserSetup(const MiniFetch::Request& request,
@@ -161,28 +177,6 @@ std::unique_ptr<BrowserRequest> browserSetup(const MiniFetch::Request& request,
 }
 }
 
-void MiniFetch::fetchAsync(Request input, std::function<void(Response)> callback) {
-    if (!callback) return;
-    MiniFetch operation(cookies_);
-    operation.request = std::move(input);
-    Response response;
-    std::string body;
-    if (!operation.prepare(response, body)) { callback(std::move(response)); return; }
-    emscripten_fetch_attr_t attr;
-    auto state = browserSetup(operation.request, operation.buildUrl(), std::move(body), attr);
-    if (!state) { response.error = "HTTP method is too long or forbidden by the browser"; callback(std::move(response)); return; }
-    state->callback = std::move(callback);
-    attr.userData = state.get();
-    attr.onsuccess = browserDone;
-    attr.onerror = browserDone;
-    // The async state owns every pointer supplied to Fetch until completion.
-    auto* raw = state.release();
-    if (!emscripten_fetch(&attr, raw->url.c_str())) {
-        std::unique_ptr<BrowserRequest> failed(raw);
-        response.error = "Unable to start browser fetch";
-        failed->callback(std::move(response));
-    }
-}
 #endif
 
 namespace {
@@ -527,17 +521,30 @@ MiniFetch::Response MiniFetch::fetchImpl() {
     }
 
 #elif defined(__EMSCRIPTEN__)
-    if (emscripten_is_main_browser_thread()) {
-        response.error = "Synchronous Fetch is unavailable on the browser main thread; use fetchAsync";
+    static thread_local bool waiting = false;
+    if (waiting) {
+        response.error = "Another fetch is already suspended on this browser thread";
         return response;
     }
+    struct WaitGuard {
+        bool& waiting;
+        explicit WaitGuard(bool& value) : waiting(value) { waiting = true; }
+        ~WaitGuard() { waiting = false; }
+    } waitGuard(waiting);
     emscripten_fetch_attr_t attr;
     auto state = browserSetup(request, buildUrl(), std::move(postData), attr);
     if (!state) { response.error = "HTTP method is too long or forbidden by the browser"; return response; }
-    attr.attributes |= EMSCRIPTEN_FETCH_SYNCHRONOUS;
-    std::unique_ptr<emscripten_fetch_t, decltype(&emscripten_fetch_close)>
-        fetch(emscripten_fetch(&attr, state->url.c_str()), emscripten_fetch_close);
-    response = browserResponse(fetch.get());
+    attr.userData = state.get();
+    attr.onsuccess = browserDone;
+    attr.onerror = browserDone;
+    if (!emscripten_fetch(&attr, state->url.c_str())) {
+        response.error = "Unable to start browser fetch";
+        return response;
+    }
+    // Asyncify suspends this call while letting browser callbacks run. Blocking a
+    // mutex/condition variable here would deadlock the browser main thread.
+    while (!state->completed) emscripten_sleep(1);
+    response = std::move(state->response);
 
 #else
     // C++ local-static initialization is once-only and synchronized.

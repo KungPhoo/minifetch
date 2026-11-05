@@ -3,12 +3,7 @@
 #include <vector>
 #include <map>
 #include <cstdint>
-#include <functional>
 #include <memory>
-#include <mutex>
-#include <chrono>
-#include <optional>
-#include <utility>
 
 class MiniFetch {
 public:
@@ -126,12 +121,7 @@ public:
     MiniFetch::Response fetch();
     // Concurrent calls are safe when each caller owns its Request. No network-wide lock.
     MiniFetch::Response fetch(Request request);
-#ifdef __EMSCRIPTEN__
-    // Browser-main-thread friendly. Setup errors call back inline, network completion
-    // on the event loop. Callbacks must not throw; destroying the client is safe.
-    void fetchAsync(Request request, std::function<void(Response)> callback);
-#endif
-    MiniFetch() = default;
+    MiniFetch();
     MiniFetch(const MiniFetch&) = delete;
     MiniFetch& operator=(const MiniFetch&) = delete;
 
@@ -142,18 +132,9 @@ public:
     void clearCookies();
 
 private:
-    struct CookieState {
-        std::mutex mutex;
-        struct Cookie {
-            std::string value;
-            bool secure = false;
-            std::optional<std::chrono::system_clock::time_point> expires;
-        };
-        // Exact origin -> (path, name) -> cookie. Deliberately never share across origins.
-        std::map<std::string, std::map<std::pair<std::string, std::string>, Cookie>> values;
-    };
-    std::shared_ptr<CookieState> cookies_ = std::make_shared<CookieState>();
-    explicit MiniFetch(std::shared_ptr<CookieState> state) : cookies_(std::move(state)) {}
+    struct CookieState;
+    std::shared_ptr<CookieState> cookies_;
+    explicit MiniFetch(std::shared_ptr<CookieState> state);
     Response fetchImpl();
     bool prepare(Response& response, std::string& body);
     static std::string cookieOrigin(const Request& request);
