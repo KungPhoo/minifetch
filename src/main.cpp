@@ -5,12 +5,16 @@
 
 int main(int argc, char** argv) {
     MiniFetch mf;
+
     auto& rq = mf.request;
-    rq.method = "POST";
-    rq.protocol = "https";
-    rq.server = "postman-echo.com";
-    rq.path = "/post";
-    rq.getVariables["test"] = "TestData";
+    rq.fillServerFromUrl("https://postman-echo.com/post");
+    // equals:
+    // rq.clear();
+    // rq.method = "POST";
+    // rq.protocol = "https";
+    // rq.server = "postman-echo.com";
+    // rq.path = "/post";
+    rq.postVariables["test"] = "TestData";  // adding post variables sets rq.method from "GET" to "POST" in fetch()
 
     auto response = mf.fetch();
 

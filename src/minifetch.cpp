@@ -15,12 +15,10 @@
     #include <curl/curl.h>
 #endif
 
-
-
 static std::string trim(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
-        return { };
+        return {};
     }
 
     const auto last = s.find_last_not_of(" \t\r\n");
@@ -34,21 +32,19 @@ static bool parseSetCookie(
     const std::string& header,
     std::string& name,
     std::string& value) {
-    const auto end    = header.find(';');
-    const auto pair   = trim(header.substr(0, end));
+    const auto end = header.find(';');
+    const auto pair = trim(header.substr(0, end));
     const auto equals = pair.find('=');
 
     if (equals == std::string::npos) {
         return false;
     }
 
-    name  = trim(pair.substr(0, equals));
+    name = trim(pair.substr(0, equals));
     value = trim(pair.substr(equals + 1));
 
     return !name.empty();
 }
-
-
 
 bool MiniFetch::Request::fillServerFromUrl(std::string url) {
     clear();
@@ -64,25 +60,23 @@ bool MiniFetch::Request::fillServerFromUrl(std::string url) {
     if (pathStart == std::string::npos) {
         // No path specified, entire rest is server
         server = url.substr(serverStart);
-        path   = "/";
+        path = "/";
     } else {
         server = url.substr(serverStart, pathStart - serverStart);
-        path   = url.substr(pathStart);
+        path = url.substr(pathStart);
     }
     method = "GET";
     return true;
 }
 
 MiniFetch::Response MiniFetch::fetch() {
-    MiniFetch::Response response = { };
+    MiniFetch::Response response = {};
 
-    if ((!request.postVariables.empty()
-         || !request.postFileNames.empty())
-        && request.method == "GET") {
+    if ((!request.postVariables.empty() || !request.postFileNames.empty()) && request.method == "GET") {
         request.method = "POST";
     }
 
-    printf("Method: %s\n", request.method.c_str());
+    // printf("Method: %s\n", request.method.c_str());
 
 #if defined(_WIN32)
 
@@ -100,32 +94,30 @@ MiniFetch::Response MiniFetch::fetch() {
         // Remove the null terminator that was included by MultiByteToWideChar
         result.pop_back();
         return result;
-    }; // ==
+    };  // ==
 
     std::wstring wServer = toWide(request.server);
-    INTERNET_PORT port   = request.protocol == "https" ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
+    INTERNET_PORT port = request.protocol == "https" ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
     if (!request.port.empty()) {
         port = std::stoi(request.port);
     }
 
-    std::string url    = buildUrl(false);
+    std::string url = buildUrl(false);
     std::wstring wPath = toWide(url);
 
     HINTERNET hSession = WinHttpOpen(L"WinHTTP Client/1.0",
                                      WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
-        return { };
+        return {};
     }
-
-
 
     HINTERNET hConnect = WinHttpConnect(hSession, wServer.c_str(), port, 0);
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
-        return { };
+        return {};
     }
 
-    DWORD flags        = (request.protocol == "https") ? WINHTTP_FLAG_SECURE : 0;
+    DWORD flags = (request.protocol == "https") ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect,
                                             toWide(request.method).c_str(),
                                             wPath.c_str(),
@@ -134,7 +126,7 @@ MiniFetch::Response MiniFetch::fetch() {
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return { };
+        return {};
     }
 
     // do not automatically resolve 302 redirects
@@ -146,31 +138,31 @@ MiniFetch::Response MiniFetch::fetch() {
         sizeof(policy));
 
     // Set headers
-    std::string postData = buildQueryPost(); // build post data before headers -> will add headers
+    std::string postData = buildQueryPost();  // build post data before headers -> will add headers
     for (auto& [k, v] : request.headers) {
         std::string headerLine(k + ": " + v + "\r\n");
         std::wstring wheaderLine = toWide(headerLine);
         WinHttpAddRequestHeaders(hRequest, wheaderLine.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
-        printf("    Header: %s: %s\n", k.c_str(), v.c_str());
+        // printf("    Header: %s: %s\n", k.c_str(), v.c_str());
     }
 
     postData += request.rawPostData;
+    // printf("    Sent-POST-Data:\n%s\n\n", postData.c_str());
+    BOOL bResults = FALSE;
+    if (!postData.empty()) {
+        bResults = WinHttpSendRequest(hRequest,
+                                      WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                      request.method == "POST" ? (LPVOID)postData.c_str() : WINHTTP_NO_REQUEST_DATA,
+                                      request.method == "POST" ? (DWORD)postData.size() : 0,
+                                      request.method == "POST" ? (DWORD)postData.size() : 0,
+                                      0);
 
-
-    printf("    Sent-POST-Data:\n%s\n\n", postData.c_str());
-
-    BOOL bResults = WinHttpSendRequest(hRequest,
-                                       WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                       request.method == "POST" ? (LPVOID)postData.c_str() : WINHTTP_NO_REQUEST_DATA,
-                                       request.method == "POST" ? (DWORD)postData.size() : 0,
-                                       request.method == "POST" ? (DWORD)postData.size() : 0,
-                                       0);
-
-    if (!bResults) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return { };
+        if (!bResults) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return {};
+        }
     }
 
     bResults = WinHttpReceiveResponse(hRequest, NULL);
@@ -178,9 +170,8 @@ MiniFetch::Response MiniFetch::fetch() {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return { };
+        return {};
     }
-
 
     // Receive Headers/Cookies
     DWORD index = 0;
@@ -201,7 +192,7 @@ MiniFetch::Response MiniFetch::fetch() {
         DWORD err = GetLastError();
 
         if (err == ERROR_WINHTTP_HEADER_NOT_FOUND) {
-            return false; // No more Set-Cookie headers
+            return false;  // No more Set-Cookie headers
         }
 
         if (err != ERROR_INSUFFICIENT_BUFFER) {
@@ -228,14 +219,14 @@ MiniFetch::Response MiniFetch::fetch() {
             nullptr, 0, nullptr, nullptr);
 
         if (len <= 1) {
-            return false; // header is present, but has no value
+            return false;  // header is present, but has no value
         }
 
         std::string utf8(static_cast<size_t>(len), '\0');
         WideCharToMultiByte(
             CP_UTF8, 0, wideCookie.c_str(), -1,
             utf8.data(), len, nullptr, nullptr);
-        utf8.pop_back(); // Remove the terminating null.
+        utf8.pop_back();  // Remove the terminating null.
         value = utf8;
         return true;
     };
@@ -293,27 +284,23 @@ MiniFetch::Response MiniFetch::fetch() {
         //     cookie.data(), len, nullptr, nullptr);
         // cookie.pop_back(); // Remove the terminating null.
 
-
-
         std::string cookie;
         if (!queryHeader("SetCookie", cookie)) {
             break;
         }
 
-        printf("    Response-Header:%s\n", cookie.c_str());
-
+        // printf("    Response-Header:%s\n", cookie.c_str());
 
         std::string name, value;
 
         if (parseSetCookie(cookie, name, value)) {
             response.setCookies[name] = value;
         } else {
-
             parseSetCookie(cookie, name, value);
         }
     }
 
-    DWORD dwSize       = 0;
+    DWORD dwSize = 0;
     DWORD dwDownloaded = 0;
     do {
         if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
@@ -337,7 +324,6 @@ MiniFetch::Response MiniFetch::fetch() {
                         WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
     response.status = Status::Code(statusCode);
 
-
     // query location for redirects
     if (response.status == 302) {
         index = 0;
@@ -348,11 +334,9 @@ MiniFetch::Response MiniFetch::fetch() {
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-
     // printf("Response-Code: %d\n", int(statusCode));
 
     // printf("Response-Data:\n%s\n\n", response.toString().c_str());
-
 
 #elif defined(__EMSCRIPTEN__)
     // In order to use the Fetch API, you would need to compile your code with -sFETCH
@@ -360,10 +344,10 @@ MiniFetch::Response MiniFetch::fetch() {
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, request.method.c_str());
 
-    attr.attributes      = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS; // Synchronous!
-    attr.withCredentials = true; // credentialed cross-origin requests - Cookies
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;  // Synchronous!
+    attr.withCredentials = true;                                                       // credentialed cross-origin requests - Cookies
 
-    std::string fullUrl       = buildUrl();
+    std::string fullUrl = buildUrl();
     emscripten_fetch_t* fetch = emscripten_fetch(&attr, fullUrl);
     // TODO postData
     if (fetch->status == 200) {
@@ -377,7 +361,7 @@ MiniFetch::Response MiniFetch::fetch() {
 #else
     CURL* curl = curl_easy_init();
     if (!curl) {
-        return { };
+        return {};
     }
 
     std::string url = buildUrl();
@@ -385,11 +369,11 @@ MiniFetch::Response MiniFetch::fetch() {
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request.method.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.timeoutSeconds);
 
-    std::string postData       = buildQueryPost(); // post data before headers -> will add headers
+    std::string postData = buildQueryPost();  // post data before headers -> will add headers
     struct curl_slist* headers = nullptr;
     for (auto& [k, v] : request.headers) {
         std::string line = k + ": " + v;
-        headers          = curl_slist_append(headers, line.c_str());
+        headers = curl_slist_append(headers, line.c_str());
     }
     if (headers) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -432,9 +416,8 @@ MiniFetch::Response MiniFetch::fetch() {
 
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
 
-
     CURLcode res = curl_easy_perform(curl);
-    long status  = 0;
+    long status = 0;
     if (res == CURLE_OK) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     }
@@ -477,31 +460,31 @@ std::string MiniFetch::buildQueryPost() {
     fill("User-Agent", "MiniFetch");
     fill("Host", request.server);
     fill("Accept", "*/*");
-    fill("Content-Type", "application/x-www-form-urlencoded");
 
     std::string cookieHeader = buildCookieHeader();
     if (!cookieHeader.empty()) {
         request.headers["Cookie"] = cookieHeader;
     }
 
-
-
     std::string query;
     if (request.postFileNames.empty()) {
-        for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
-            if (it != request.postVariables.begin()) {
-                query += "&";
+        if (request.postVariables.empty()) {
+        } else {
+            fill("Content-Type", "application/x-www-form-urlencoded");
+            for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
+                if (it != request.postVariables.begin()) {
+                    query += "&";
+                }
+                query += urlEncode(it->first) + "=" + urlEncode(it->second);
             }
-            query += urlEncode(it->first) + "=" + urlEncode(it->second);
         }
     } else {
         // multipart/form-data
-
         request.headers["Content-Type"] = "multipart/form-data; boundary=" + request.boundary;
 
         for (auto it = request.postVariables.begin(); it != request.postVariables.end(); ++it) {
             std::string filename = it->second;
-            size_t fnat          = 0;
+            size_t fnat = 0;
             for (size_t i = 0; i < filename.size(); ++i) {
                 if (filename[i] == '/' || filename[i] == '\\') {
                     fnat = i + 1;
@@ -513,13 +496,13 @@ std::string MiniFetch::buildQueryPost() {
         }
         for (auto it = request.postFileNames.begin(); it != request.postFileNames.end(); ++it) {
             std::string filename = it->second;
-            size_t fnat          = 0;
+            size_t fnat = 0;
             for (size_t i = 0; i < filename.size(); ++i) {
                 if (filename[i] == '/' || filename[i] == '\\') {
                     fnat = i + 1;
                 }
             }
-            filename                = filename.substr(fnat);
+            filename = filename.substr(fnat);
             std::string contentType = "application/octet-stream";
             query += "--" + request.boundary + "\r\n" + "Content-Disposition: form-data; name=\"" + urlEncode(it->first) + "\"; filename=\"" + filename + "\"\r\n" + "Content-Type: " + contentType + "\r\n" + "\r\n" + fileContents(it->second) + "\r\n";
             ;
@@ -573,8 +556,6 @@ std::string MiniFetch::buildCookieHeader() const {
     return result;
 }
 
-
-
 std::string MiniFetch::fileContents(std::string path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -609,77 +590,76 @@ void MiniFetch::storeReceivedCookies(const MiniFetch::Request& rq, const MiniFet
     }
 }
 
-
 std::string MiniFetch::Response::statusString() const {
 #define MCASE(a)    \
     case Status::a: \
         return std::string(#a);
     switch (status) {
-        MCASE(InternalError) //  -1
-        MCASE(Continue) //  100
-        MCASE(Processing) //  102
-        MCASE(SwitchingProtocols) //  101
-        MCASE(Accepted) //  202
-        MCASE(AlreadyReported) //  208
-        MCASE(Created) //  201
-        MCASE(IMUsed) //  229
-        MCASE(MultiStatus) //  207
-        MCASE(NoContent) //  204
-        MCASE(NonAuthoritativeInfo) //  203
-        MCASE(OK) //  200
-        MCASE(PartialContent) //  206
-        MCASE(ResetContent) //  205
-        MCASE(Found) //  302
-        MCASE(MovedPermanently) //  301
-        MCASE(MultipleChoices) //  300
-        MCASE(NotModified) //  304
-        MCASE(Permanent) //  308
-        MCASE(SeeOther) //  303
-        MCASE(SwitchProxy) //  306
-        MCASE(Temp) //  307
-        MCASE(UseProxy) //  305
-        MCASE(BadRequest) //  400
-        MCASE(Conflict) //  409
-        MCASE(ExpectationFailed) //  417
-        MCASE(FailedDependency) //  424
-        MCASE(Forbidden) //  403
-        MCASE(Gone) //  410
-        MCASE(ImATeapot) //  418
-        MCASE(LengthRequired) //  411
-        MCASE(Locked) //  423
-        MCASE(LoginTimeOut) //  440
-        MCASE(MethodNotAllowed) //  405
-        MCASE(MisdirectedRequest) //  421
-        MCASE(NotAcceptable) //  406
-        MCASE(NotFound) //  404
-        MCASE(PayloadTooLarge) //  413
-        MCASE(PaymentRequired) //  402
-        MCASE(PreconditionFailed) //  412
-        MCASE(PreconditionRequired) //  428
-        MCASE(ProxyAuthRequired) //  407
-        MCASE(RangeNotSatisfiable) //  416
-        MCASE(RequestHeaderFieldsTooLarge) //  431
-        MCASE(RequestTimeout) //  408
-        MCASE(RetryWith) //  449
-        MCASE(TooManyRequests) //  429
-        MCASE(Unauthorized) //  401
-        MCASE(UnavailableForLegalReasons) //  451
-        MCASE(UnprocessableEntity) //  422
-        MCASE(UnsupportedMediaType) //  415
-        MCASE(UpgradeRequired) //  426
-        MCASE(URITooLong) //  414
-        MCASE(BadGateway) //  502
-        MCASE(BandwidthLimitExceeded) //  509
-        MCASE(GatewayTimeout) //  504
-        MCASE(HTTPVersionNotSupported) //  505
-        MCASE(InsufficientStorage) //  507
-        MCASE(Internal) //  500
-        MCASE(LoopDetected) //  508
-        MCASE(NetworkAuthRequired) //  511
-        MCASE(NotExtended) //  510
-        MCASE(NotImplemented) //  501
-        MCASE(ServiceUnavailable) //  503
-        MCASE(VariantAlsoNegotiates) //  506
+        MCASE(InternalError)                //  -1
+        MCASE(Continue)                     //  100
+        MCASE(Processing)                   //  102
+        MCASE(SwitchingProtocols)           //  101
+        MCASE(Accepted)                     //  202
+        MCASE(AlreadyReported)              //  208
+        MCASE(Created)                      //  201
+        MCASE(IMUsed)                       //  229
+        MCASE(MultiStatus)                  //  207
+        MCASE(NoContent)                    //  204
+        MCASE(NonAuthoritativeInfo)         //  203
+        MCASE(OK)                           //  200
+        MCASE(PartialContent)               //  206
+        MCASE(ResetContent)                 //  205
+        MCASE(Found)                        //  302
+        MCASE(MovedPermanently)             //  301
+        MCASE(MultipleChoices)              //  300
+        MCASE(NotModified)                  //  304
+        MCASE(Permanent)                    //  308
+        MCASE(SeeOther)                     //  303
+        MCASE(SwitchProxy)                  //  306
+        MCASE(Temp)                         //  307
+        MCASE(UseProxy)                     //  305
+        MCASE(BadRequest)                   //  400
+        MCASE(Conflict)                     //  409
+        MCASE(ExpectationFailed)            //  417
+        MCASE(FailedDependency)             //  424
+        MCASE(Forbidden)                    //  403
+        MCASE(Gone)                         //  410
+        MCASE(ImATeapot)                    //  418
+        MCASE(LengthRequired)               //  411
+        MCASE(Locked)                       //  423
+        MCASE(LoginTimeOut)                 //  440
+        MCASE(MethodNotAllowed)             //  405
+        MCASE(MisdirectedRequest)           //  421
+        MCASE(NotAcceptable)                //  406
+        MCASE(NotFound)                     //  404
+        MCASE(PayloadTooLarge)              //  413
+        MCASE(PaymentRequired)              //  402
+        MCASE(PreconditionFailed)           //  412
+        MCASE(PreconditionRequired)         //  428
+        MCASE(ProxyAuthRequired)            //  407
+        MCASE(RangeNotSatisfiable)          //  416
+        MCASE(RequestHeaderFieldsTooLarge)  //  431
+        MCASE(RequestTimeout)               //  408
+        MCASE(RetryWith)                    //  449
+        MCASE(TooManyRequests)              //  429
+        MCASE(Unauthorized)                 //  401
+        MCASE(UnavailableForLegalReasons)   //  451
+        MCASE(UnprocessableEntity)          //  422
+        MCASE(UnsupportedMediaType)         //  415
+        MCASE(UpgradeRequired)              //  426
+        MCASE(URITooLong)                   //  414
+        MCASE(BadGateway)                   //  502
+        MCASE(BandwidthLimitExceeded)       //  509
+        MCASE(GatewayTimeout)               //  504
+        MCASE(HTTPVersionNotSupported)      //  505
+        MCASE(InsufficientStorage)          //  507
+        MCASE(Internal)                     //  500
+        MCASE(LoopDetected)                 //  508
+        MCASE(NetworkAuthRequired)          //  511
+        MCASE(NotExtended)                  //  510
+        MCASE(NotImplemented)               //  501
+        MCASE(ServiceUnavailable)           //  503
+        MCASE(VariantAlsoNegotiates)        //  506
 #undef MCASE
     };
     std::stringstream ss;
